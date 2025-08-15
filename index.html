@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>PDF Viewer (PDF.js)</title>
+<style>
+  :root { --bg:#111; --fg:#eee; --accent:#4fc08d; }
+  html, body { height:100%; margin:0; background:var(--bg); color:var(--fg); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Hiragino Sans", "Noto Sans JP", "Helvetica Neue", Arial, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", sans-serif; }
+  .toolbar {
+    position: sticky; top: 0; z-index: 10;
+    display:flex; gap:.5rem; align-items:center; padding:.5rem .75rem;
+    background:rgba(0,0,0,.7); backdrop-filter: blur(6px);
+    border-bottom: 1px solid #222;
+  }
+  .toolbar button, .toolbar input {
+    background:#222; color:var(--fg); border:1px solid #333; border-radius:.4rem; padding:.4rem .6rem;
+  }
+  .toolbar button:active { transform: scale(0.98); }
+  .spacer { flex:1 }
+  #viewer {
+    position: relative;
+    min-height: calc(100dvh - 48px);
+    display:flex; justify-content:center; align-items:flex-start;
+    padding: .75rem;
+  }
+  canvas { background:#fff; box-shadow: 0 4px 16px rgba(0,0,0,.35); max-width: 100%; height: auto; }
+  .hint { position:fixed; bottom:.5rem; right:.5rem; opacity:.7; font-size:.8rem }
+  .sr-only { position:absolute; left:-10000px; top:auto; width:1px; height:1px; overflow:hidden; }
+</style>
+</head>
+<body>
+  <div class="toolbar">
+    <button id="prev">← Prev</button>
+    <button id="next">Next →</button>
+    <span>Page <input id="pageNum" type="number" min="1" value="1" style="width:4rem"> / <span id="pageCount">?</span></span>
+    <div class="spacer"></div>
+    <button id="fitWidth">Fit width</button>
+    <button id="zoomOut">－</button>
+    <button id="zoomIn">＋</button>
+  </div>
+  <div id="viewer"><canvas id="pdfCanvas"></canvas></div>
+  <div class="hint">スワイプ：ページ送り　／　ピンチ：ズーム</div>
+
+  <!-- PDF.js from CDN -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js" integrity="sha512-7o1wka6sJkntVOVb1oW1p9UnXw0xTRoJcD9z9z9sK8m6uUYmOknmXnRqy9m8rIRdHqQ1fi8J+E8iNU4mFSp4cg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
+  <script>
+    const DEFAULT_FILE = 'access.pdf'; // ここをPDF名に合わせる（同じ階層）
+    const urlParams = new URLSearchParams(location.search);
+    const pdfUrl = urlParams.get('file') || DEFAULT_FILE;
+
+    // Worker設定（同CDN）
+    if (window['pdfjsLib']) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+
+    const canvas = document.getElementById('pdfCanvas');
+    const ctx = canvas.getContext('2d');
+    const pageNumInput = document.getElementById('pageNum');
+    const pageCountSpan = document.getElementById('pageCount');
+    const prevBtn = document.getElementById('prev');
+    const nextBtn = document.getElementById('next');
+    const zoomInBtn = document.getElementById('zoomIn');
+    const zoomOutBtn = document.getElementById('zoomOut');
+    const fitWidthBtn = document.getElementById('fitWidth');
+    const viewer = document.getElementById('viewer');
+
+    let pdfDoc = null;
+    let currentPage = 1;
+    let scale = 1.0;
+    let fitWidthMode = true;
+    let rendering = false;
+    let pending = null;
+
+    function fitWidthScale(viewport) {
+      const maxWidth = Math.min(viewer.clientWidth - 16, window.innerWidth);
+      return (maxWidth / viewport.width);
+    }
+
+    function renderPage(num) {
+      rendering = true;
+      pdfDoc.getPage(num).then(function(page) {
+        // 初期ビューポートは scale=1
+        let vp = page.getViewport({ scale: 1 });
+        let useScale = fitWidthMode ? fitWidthScale(vp) : scale;
+
+        const viewport = page.getViewport({ scale: useScale });
+        canvas.width = Math.floor(viewport.width);
+        canvas.height = Math.floor(viewport.height);
+
+        const renderContext = { canvasContext: ctx, viewport: viewport };
+        const renderTask = page.render(renderContext);
+        renderTask.promise.then(function () {
+          rendering = false;
+          pageNumInput.value = num;
+          if (pending !== null) { renderPage(pending); pending = null; }
+        });
+      });
+    }
+
+    function queueRender(num) {
+      if (rendering) { pending = num; }
+      else { renderPage(num); }
+    }
+
+    function showPage(num) {
+      if (num < 1 || num > pdfDoc.numPages) return;
+      currentPage = num;
+      queueRender(num);
+    }
+
+    // 操作
+    prevBtn.addEventListener('click', () => showPage(currentPage - 1));
+    nextBtn.addEventListener('click', () => showPage(currentPage + 1));
+    pageNumInput.addEventListener('change', () => showPage(parseInt(pageNumInput.value || '1', 10)));
+
+    zoomInBtn.addEventListener('click', () => { fitWidthMode = false; scale *= 1.2; renderPage(currentPage); });
+    zoomOutBtn.addEventListener('click', () => { fitWidthMode = false; scale /= 1.2; renderPage(currentPage); });
+    fitWidthBtn.addEventListener('click', () => { fitWidthMode = true; renderPage(currentPage); });
+
+    // キーボード
+    window.addEventListener('keydown', (e) => {
+      if (e.key === 'ArrowRight' || e.key === 'PageDown') showPage(currentPage + 1);
+      if (e.key === 'ArrowLeft' || e.key === 'PageUp') showPage(currentPage - 1);
+      if (e.key === '+') { fitWidthMode = false; scale *= 1.2; renderPage(currentPage); }
+      if (e.key === '-') { fitWidthMode = false; scale /= 1.2; renderPage(currentPage); }
+    });
+
+    // タッチスワイプでページ送り
+    let touchStartX = 0, touchStartY = 0;
+    document.addEventListener('touchstart', (e) => {
+      const t = e.changedTouches[0];
+      touchStartX = t.clientX; touchStartY = t.clientY;
+    }, {passive:true});
+    document.addEventListener('touchend', (e) => {
+      const t = e.changedTouches[0];
+      const dx = t.clientX - touchStartX;
+      const dy = t.clientY - touchStartY;
+      if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy)) {
+        if (dx < 0) showPage(currentPage + 1); else showPage(currentPage - 1);
+      }
+    }, {passive:true});
+
+    // 画面サイズ変更で再フィット
+    window.addEventListener('resize', () => { if (fitWidthMode) renderPage(currentPage); });
+
+    // 読み込み
+    pdfjsLib.getDocument(pdfUrl).promise.then(function(pdf) {
+      pdfDoc = pdf;
+      pageCountSpan.textContent = pdf.numPages;
+      showPage(1);
+    }).catch(err => {
+      console.error(err);
+      alert('PDFを読み込めませんでした: ' + err.message + '\\nPDFファイル名が "access.pdf" か確認してください。');
+    });
+  </script>
+</body>
+</html>
